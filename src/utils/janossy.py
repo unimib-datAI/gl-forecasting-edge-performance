@@ -5,13 +5,13 @@ import random
 import numpy as np
 
 
-class JanossyPermutedBatchSequence(Sequence):
+class JanossyPermutedBatchSequence(Sequence): # non viene usato nel file di kan
     """
     Keras Sequence generator for Janossy pooling.
     Generates `k` permutations per sample in each batch.
     """
 
-    def __init__(self, X, y, batch_size=32, num_permutations=10, shuffle_batch=True):
+    def __init__(self, X, y, batch_size=32, num_permutations=6, shuffle_batch=True):
         self.X = np.array(X)  # shape: (num_samples, sequence_length, input_dim)
         self.y = np.array(y)
         self.batch_size = batch_size
@@ -53,7 +53,7 @@ class JanossyPermutedBatchSequence(Sequence):
             np.random.shuffle(self.indexes)
 
 
-def prepare_janossy_input(X, Y, num_permutations=10):
+def prepare_janossy_input(X, Y, num_permutations=6):
   """
   Transforms test data to Janossy-pooling-compatible input shape:
   (num_samples, num_permutations, sequence_length, input_dim)
@@ -72,7 +72,7 @@ def prepare_janossy_input(X, Y, num_permutations=10):
   return X_prepared, Y_prepared
 
 
-def prepare_janossy_test_input(X, num_permutations=10):
+def prepare_janossy_test_input(X, num_permutations=6): # nel file di kan è chiamata prepare_janossy_input 
   """
   Transforms test data to Janossy-pooling-compatible input shape:
   (num_samples, num_permutations, sequence_length, input_dim)

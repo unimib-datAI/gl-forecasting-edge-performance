@@ -203,10 +203,16 @@ def clean_for_model(df: pd.DataFrame, numerical_features: list) -> pd.DataFrame:
     return df
 # build task and dataset dictionaries
 def build_tasks_and_datasets(df: pd.DataFrame):
-    target_prefixes = ("cpu_usage_", "ram_usage_", "overloaded_node", "medium_latency")
-    targets = [
-        col for col in df.columns
-        if col.startswith(target_prefixes) and "idle" not in col
+    # target_prefixes = ("cpu_usage_", "ram_usage_", "overloaded_node", "medium_latency")
+    # targets = [
+    #     col for col in df.columns
+    #     if col.startswith(target_prefixes) and "idle" not in col
+    # ]
+
+    regression_targets = [
+    "cpu_usage_node",
+    "ram_usage_node",
+    "ram_usage_node_percentage"
     ]
 
     categorical_features = ["node_type"]
@@ -214,12 +220,12 @@ def build_tasks_and_datasets(df: pd.DataFrame):
     features = categorical_features + numerical_features
 
     categorical_targets = ["overloaded_node"]
-    numerical_targets = [col for col in targets if col not in categorical_targets]
+    #numerical_targets = [col for col in targets if col not in categorical_targets]
 
     tasks = {
         "Multi_Task_regression": {
             "features": features,
-            "targets": numerical_targets
+            "targets": regression_targets
         },
         "Multi_Task_classification": {
             "features": features,
@@ -230,8 +236,8 @@ def build_tasks_and_datasets(df: pd.DataFrame):
     tasks_unified = {
         "Multi_Task": {
             "features": features,
-            "targets": numerical_targets + categorical_targets,
-            "regression_targets": numerical_targets,
+            "targets": regression_targets + categorical_targets,
+            "regression_targets": regression_targets,
             "classification_targets": categorical_targets
         }
     }
@@ -435,28 +441,60 @@ def build_nodes_dataframe(
   for node_type, node_type_data in data_x.groupby("node_type"):
     # extract the corresponding y values
     node_type_targets = data_y.loc[node_type_data.index]
+    # create groups based on identical feature vectors
+    feature_cols = node_type_data.columns.tolist()
+    df_tmp = pd.concat([node_type_data, node_type_targets], axis=1)
+    df_tmp["_group_key"] = df_tmp[feature_cols].apply(
+      lambda row: tuple(row.values),
+      axis=1
+    )
     # count nodes that have the required type
     nnodes = len(towers[towers["node_type"] == node_type])
-    # count available data for that node type (dividing overloaded and 
+    # count available groups for that node type (dividing overloaded and 
     # not overloaded)
-    nvals = len(node_type_data)
-    nvals_overloaded = 0
+    ngroups = len(df_tmp["_group_key"].unique())
+    ngroups_overloaded = 0
+
     if "overloaded_node" in node_type_targets:
-      nvals_overloaded = len(
-        node_type_targets[node_type_targets["overloaded_node"] == 1]
+      ngroups_overloaded = len(
+        df_tmp[
+          df_tmp["overloaded_node"] == 1
+        ]["_group_key"].unique()
       )
+
     nvpn, remainder = [None, None], [None, None]
-    nvpn[0], remainder[0] = divmod(nvals - nvals_overloaded, nnodes)
-    nvpn[1], remainder[1] = divmod(nvals_overloaded, nnodes)
+
+    nvpn[0], remainder[0] = divmod(
+      ngroups - ngroups_overloaded,
+      nnodes
+    )
+
+    nvpn[1], remainder[1] = divmod(
+      ngroups_overloaded,
+      nnodes
+    )
+
     # split equally
     for i, node_id in enumerate(
         towers[towers["node_type"] == node_type].index
       ):
+
       for overload_status in [0, 1]:
-        idxs = node_type_targets[
-          node_type_targets["overloaded_node"] == overload_status
-        ].iloc[
-          i * nvpn[overload_status] : (i+1) * nvpn[overload_status]
+
+        selected_groups = (
+          df_tmp[
+            df_tmp["overloaded_node"] == overload_status
+          ][["_group_key"]]
+          .drop_duplicates()
+          .iloc[
+            i * nvpn[overload_status] : (i+1) * nvpn[overload_status]
+          ]
+        )
+
+        idxs = df_tmp[
+          df_tmp["_group_key"].isin(
+            selected_groups["_group_key"]
+          )
         ].index
         # add
         if node_id not in nodes_dataset:
@@ -478,9 +516,20 @@ def build_nodes_dataframe(
           surely_test_set[node_type] = {
             "x": pd.DataFrame(), "y": pd.DataFrame()
           }
-        idxs = node_type_targets[
-          node_type_targets["overloaded_node"] == overload_status
-        ].iloc[-remainder[overload_status]:].index
+        remainder_groups = (
+          df_tmp[
+            df_tmp["overloaded_node"] == overload_status
+          ][["_group_key"]]
+          .drop_duplicates()
+          .iloc[-remainder[overload_status]:]
+        )
+
+        idxs = df_tmp[
+          df_tmp["_group_key"].isin(
+            remainder_groups["_group_key"]
+          )
+        ].index
+
         surely_test_set[node_type]["x"] = pd.concat(
           [surely_test_set[node_type]["x"], node_type_data.loc[idxs,:]]
         )
@@ -1562,14 +1611,14 @@ def prepare_data(
             random_state=split_seed
         )
 
-        X_train = outputs["X_train_raw"].to_numpy()
-        Y_train = outputs["y_train_raw"].to_numpy()
+        X_train = outputs["x_train_dict"]["Multi_Task"]
+        Y_train = outputs["y_train_dict"]["Multi_Task"].to_numpy()
 
-        X_val = outputs["X_val_raw"].to_numpy()
-        Y_val = outputs["y_val_raw"].to_numpy()
+        X_val = outputs["x_val_dict"]["Multi_Task"]
+        Y_val = outputs["y_val_dict"]["Multi_Task"].to_numpy()
 
-        X_test = outputs["X_test_raw"].to_numpy()
-        Y_test = outputs["y_test_raw"].to_numpy()
+        X_test = outputs["x_test_dict"]["Multi_Task"]
+        Y_test = outputs["y_test_dict"]["Multi_Task"].to_numpy()
 
         # Save in memory
         prepared_nodes_dataset[node] = (

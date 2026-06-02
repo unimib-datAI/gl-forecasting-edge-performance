@@ -62,7 +62,7 @@ def parse_arguments() -> argparse.Namespace:
     "--networks", 
     help="Network indices", 
     nargs="+",
-    default=[0]
+    default=0
   )
   parser.add_argument(
     "--n_sim_per_network", 
@@ -126,14 +126,14 @@ def compute_and_plot_predictions(
     Y_data_cls = np.array(X_Y_data[data_key][1])[:,-1]
     # loop over predicted values
     nr, nc = Y_data.shape
-    ymin = [2] * nc
-    ymax = [1] * nc
+    ymin = [2,2,2]
+    ymax = [1,1,1]
     for i in range(nr):
       for j in range(nc):
         ax[j].plot(
           Y_data[i,j],
           Y_pred[i,j],
-          color = colors[j % len(colors)],
+          color = colors[j],
           marker = ".",
           label = targets[j] if i == 0 else None
         )
@@ -301,7 +301,7 @@ def nclass_classification_mosaic_plot(
 
 def plot_history(history_df: pd.DataFrame, output_folder: str, node: str):
   # plot MAE history
-  history_df[["fn_0_masked_mae", "val_fn_0_masked_mae"]].plot(grid = True)
+  history_df[["fn_0_mae", "val_fn_0_mae"]].plot(grid = True)
   plt.savefig(
     os.path.join(output_folder, f"mae_{node}.png"),
     dpi = 300,
@@ -310,7 +310,7 @@ def plot_history(history_df: pd.DataFrame, output_folder: str, node: str):
   )
   plt.close()
   # plot MSE history
-  history_df[["fn_0_masked_mse", "val_fn_0_masked_mse"]].plot(grid = True)
+  history_df[["fn_0_mse", "val_fn_0_mse"]].plot(grid = True)
   plt.savefig(
     os.path.join(output_folder, f"mse_{node}.png"),
     dpi = 300,
@@ -319,7 +319,7 @@ def plot_history(history_df: pd.DataFrame, output_folder: str, node: str):
   )
   plt.close()
   # plot MAPE history
-  history_df[["fn_0_masked_mape", "val_fn_0_masked_mape"]].plot(grid = True)
+  history_df[["fn_0_mape", "val_fn_0_mape"]].plot(grid = True)
   plt.savefig(
     os.path.join(output_folder, f"mape_{node}.png"),
     dpi = 300,
@@ -346,7 +346,7 @@ def plot_multinode_history(
   _, axs = plt.subplots(nrows = 4, ncols = 2, figsize = (16,16), sharex = True)
   for node, history_df in histories.groupby("node"):
     color = "k" if node == "centralized" else (
-      colors[0] if centralized_exists else colors[int(node) % len(colors)]
+      colors[0] if centralized_exists else colors[int(node)]
     )
     linewidth = 2 if node == "centralized" else 1
     linestyle = "solid" if node == "centralized" else "dashed"
@@ -354,7 +354,7 @@ def plot_multinode_history(
     # -- MAE
     history_df.plot(
       x = "iter",
-      y = "fn_0_masked_mae", 
+      y = "fn_0_mae", 
       ax = axs[0,0],
       label = label,
       grid = True,
@@ -364,7 +364,7 @@ def plot_multinode_history(
     )
     history_df.plot(
       x = "iter",
-      y = "val_fn_0_masked_mae", 
+      y = "val_fn_0_mae", 
       ax = axs[0,1],
       label = label,
       grid = True,
@@ -372,10 +372,10 @@ def plot_multinode_history(
       linewidth = linewidth,
       linestyle = linestyle
     )
-    # # -- MSE
+    # -- MSE
     history_df.plot(
       x = "iter",
-      y = "fn_0_masked_mse", 
+      y = "fn_0_mse", 
       ax = axs[1,0],
       label = label,
       grid = True,
@@ -385,7 +385,7 @@ def plot_multinode_history(
     )
     history_df.plot(
       x = "iter",
-      y = "val_fn_0_masked_mse", 
+      y = "val_fn_0_mse", 
       ax = axs[1,1],
       label = label,
       grid = True,
@@ -393,10 +393,10 @@ def plot_multinode_history(
       linewidth = linewidth,
       linestyle = linestyle
     )
-    # # -- MAPE
+    # -- MAPE
     history_df.plot(
       x = "iter",
-      y = "fn_0_masked_mape", 
+      y = "fn_0_mape", 
       ax = axs[2,0],
       label = label,
       grid = True,
@@ -406,7 +406,7 @@ def plot_multinode_history(
     )
     history_df.plot(
       x = "iter",
-      y = "val_fn_0_masked_mape", 
+      y = "val_fn_0_mape", 
       ax = axs[2,1],
       label = label,
       grid = True,
@@ -444,7 +444,7 @@ def plot_multinode_history(
   linestyle = "solid"
   # -- MAE
   local.plot(
-    y = "fn_0_masked_mae", 
+    y = "fn_0_mae", 
     ax = axs[0,0],
     label = "local average",
     grid = True,
@@ -453,7 +453,7 @@ def plot_multinode_history(
     linestyle = linestyle
   )
   local.plot(
-    y = "val_fn_0_masked_mae", 
+    y = "val_fn_0_mae", 
     ax = axs[0,1],
     label = "local average",
     grid = True,
@@ -461,9 +461,9 @@ def plot_multinode_history(
     linewidth = linewidth,
     linestyle = linestyle
   )
-  # # -- MSE
+  # -- MSE
   local.plot(
-    y = "fn_0_masked_mse", 
+    y = "fn_0_mse", 
     ax = axs[1,0],
     label = "local average",
     grid = True,
@@ -472,7 +472,7 @@ def plot_multinode_history(
     linestyle = linestyle
   )
   local.plot(
-    y = "val_fn_0_masked_mse", 
+    y = "val_fn_0_mse", 
     ax = axs[1,1],
     label = "local average",
     grid = True,
@@ -480,9 +480,9 @@ def plot_multinode_history(
     linewidth = linewidth,
     linestyle = linestyle
   )
-  # # -- MAPE
+  # -- MAPE
   local.plot(
-    y = "fn_0_masked_mape", 
+    y = "fn_0_mape", 
     ax = axs[2,0],
     label = "local average",
     grid = True,
@@ -491,7 +491,7 @@ def plot_multinode_history(
     linestyle = linestyle
   )
   local.plot(
-    y = "val_fn_0_masked_mape", 
+    y = "val_fn_0_mape", 
     ax = axs[2,1],
     label = "local average",
     grid = True,
@@ -600,7 +600,7 @@ def train_one_model(
       # early_stopping,
       model_checkpoint,
     ],
-    epochs = config.training.epochs_per_update * config.training.fixed_updates,
+    epochs = 10,
     batch_size = config.training.batch_size,
     shuffle = config.training.shuffle_batch,
     # use_multiprocessing = False,

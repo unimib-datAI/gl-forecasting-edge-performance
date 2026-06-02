@@ -1,5 +1,6 @@
 from gossiplearning.config import Config
 
+from tensorflow import keras
 from keras.layers import Dropout
 from tensorflow.keras import Model, Sequential, Input, layers
 from tensorflow.keras.layers import LSTM, Dense
@@ -12,8 +13,10 @@ from tensorflow.keras import backend as K
 import tensorflow as tf
 from tensorflow import reduce_mean
 
+# from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+# from tensorflow.keras.callbacks import CSVLogger
 
-def create_LSTM(config: Config) -> Model:
+def create_LSTM(config: Config) -> Model: # NON PRESENTE NEL FILE DI KAN 
     optz = Adam(learning_rate=0.001, epsilon=1e-6)
 
     input_timesteps = 4
@@ -55,16 +58,51 @@ def create_LSTM(config: Config) -> Model:
 
 
 @register_keras_serializable()
-def r2_score_training(y_true, y_pred):
+def r2_score_training(y_true, y_pred): # KAN USA LA VERSIONE MASKED
     y_true = tf.cast(y_true, tf.float32)
     y_pred = tf.cast(y_pred, tf.float32)
     ss_res = K.sum(K.square(y_true - y_pred))
     ss_tot = K.sum(K.square(y_true - K.mean(y_true)))
     return 1 - ss_res / (ss_tot + K.epsilon())
 
+@register_keras_serializable() # usato in train_model_cv e train_model (build_janossy_rnn_model)
+def masked_r2(y_true, y_pred):
+    mask = ~tf.reduce_all(tf.math.is_nan(y_true), axis=-1)
+    y_true = tf.boolean_mask(y_true, mask)
+    y_pred = tf.boolean_mask(y_pred, mask)
+
+    ss_res = tf.reduce_sum(tf.square(y_true - y_pred))
+    ss_tot = tf.reduce_sum(tf.square(y_true - tf.reduce_mean(y_true)))
+    return 1 - ss_res / (ss_tot + 1e-7)
+
+@register_keras_serializable() # usato in train_model_cv e train_model (build_janossy_rnn_model)
+def masked_mae(y_true, y_pred):
+    mask = ~tf.reduce_all(tf.math.is_nan(y_true), axis=-1)
+    y_true = tf.boolean_mask(y_true, mask)
+    y_pred = tf.boolean_mask(y_pred, mask)
+    return tf.reduce_mean(tf.abs(y_true - y_pred))
 
 @register_keras_serializable()
-class JanossyPooling(layers.Layer):
+def masked_mse(y_true, y_pred):
+    # Mask samples where ALL regression targets are nan
+    sample_mask = ~tf.reduce_all(tf.math.is_nan(y_true), axis=-1)
+
+    # Select only unmasked samples
+    y_true_masked = tf.boolean_mask(y_true, sample_mask)
+    y_pred_masked = tf.boolean_mask(y_pred, sample_mask)
+
+    return tf.reduce_mean(tf.square(y_true_masked - y_pred_masked))
+
+@register_keras_serializable()
+def masked_mape(y_true, y_pred):
+    sample_mask = ~tf.reduce_all(tf.math.is_nan(y_true), axis=-1)
+    y_true_masked = tf.boolean_mask(y_true, sample_mask)
+    y_pred_masked = tf.boolean_mask(y_pred, sample_mask)
+    epsilon = tf.keras.backend.epsilon()
+    return tf.reduce_mean(tf.abs((y_true_masked - y_pred_masked) / (y_true_masked + epsilon))) * 100
+
+@register_keras_serializable()
+class JanossyPooling(layers.Layer): # usato in train_model_cv e train_model (build_janossy_rnn_model)
     def call(self, inputs):
         return reduce_mean(inputs, axis=1)
 
@@ -72,7 +110,7 @@ class JanossyPooling(layers.Layer):
         return (input_shape[0], input_shape[-1])
 
 
-def build_janossy_rnn_model(config: Config) -> Model:
+def build_janossy_rnn_model(config: Config): # usato in train_model_cv e train_model
     """
     Builds a Janossy pooling model using GRU/LSTM and averaging over k permutations.
 
@@ -85,20 +123,18 @@ def build_janossy_rnn_model(config: Config) -> Model:
     Returns:
         Compiled Keras model
     """
-    reg_output_dim = config.training.reg_output_dim
-    input_dim = config.training.input_dim
     rnn_type = 'gru'
     rnn_units = 80
-    num_permutations = 6
     reg_output_activation = "linear"
-    reg_loss_function = "mse"
+    reg_loss_function = masked_mse
     cls_output_activation = "sigmoid"
     cls_loss_function = "binary_crossentropy"
+    reg_output_dim = config.training.reg_output_dim
+    input_dim = config.training.input_dim
+    num_permutations= 6 #config.training.num_permutations
 
     # Input layer
-    input_layer = Input(
-        shape=(num_permutations, None, input_dim), name="input_layer"
-    )
+    input_layer = keras.Input(shape=(num_permutations, None, input_dim), name="input_layer")
 
     # Mask padded zeros before processing
     x = layers.TimeDistributed(
@@ -112,7 +148,7 @@ def build_janossy_rnn_model(config: Config) -> Model:
             layers.Dense(64, activation='relu', name="dense_embedding")
         ),
         name="time_distributed_embedding"
-    )(input_layer)  # -> (batch_size, num_permutations, sequence_length, 64)
+    )(x)  # -> (batch_size, num_permutations, sequence_length, 64)
 
     # f*: RNN across each permutation
     if rnn_type.lower() == 'gru':
@@ -132,51 +168,39 @@ def build_janossy_rnn_model(config: Config) -> Model:
     # ρ: MLP for final prediction
     x = layers.Dense(128, activation='tanh', name="dense_final")(x)
     x = layers.Dropout(0.2, name="dropout_final")(x)
-    
-    # Output layers, loss and metrics definition
-    # -- regression head
-    outputs = [
-        layers.Dense(
-            reg_output_dim, 
-            activation = reg_output_activation, 
-            name = "fn_0"
-        )(x)
-    ]
-    loss = {
-        "fn_0": reg_loss_function
-    }
-    metrics = {
-        "fn_0": [
-            "mae", 
-            "msle", 
-            "mse", 
-            "mape", 
-            RootMeanSquaredError(), 
-            r2_score_training
-        ]
-    }
-    # -- classification head (if required)
-    if config.training.n_output_vars > 1:
-        outputs.append(
-            layers.Dense(
-                1, activation = cls_output_activation, 
-                name = "fn_1"
-            )(x)
-        )
-        loss["fn_1"] = cls_loss_function
-        metrics["fn_1"] = ["accuracy"]
 
+    # -----------------------------
+    # Multi-task heads
+    # -----------------------------
+    # ----- Regression head -----
+    reg_adapter = layers.Dense(128, activation='relu', name='regression_dense')(x)
+    reg_adapter = layers.Dropout(0.2, name='regression_dropout')(reg_adapter)
+    reg_output = layers.Dense(reg_output_dim, activation=reg_output_activation, name="fn_0")(reg_adapter)
+
+    # ----- Classification head -----
+    cls_adapter = layers.Dense(128, activation='relu', name='classification_dense')(x)
+    cls_adapter = layers.Dropout(0.2, name='classification_dropout')(cls_adapter)
+    cls_output = layers.Dense(1, activation=cls_output_activation, name="fn_1")(cls_adapter)
+
+    # -----------------------------
     # Build and compile model
-    model = Model(
-        inputs = input_layer, 
-        outputs = outputs, 
-        name = "janossy_multitask_model"
-    )
-    
+    # -----------------------------
+    model = keras.Model(inputs=input_layer, outputs=[reg_output, cls_output], name="janossy_multitask_model")
+
     model.compile(
-        optimizer = "adam",
-        loss = loss,
-        metrics = metrics,
+        optimizer='adam',
+        loss={
+            'fn_0': reg_loss_function,
+            'fn_1': cls_loss_function
+        },
+        loss_weights={
+            'fn_0': 5.0,
+            'fn_1':1.0
+        },
+        metrics={
+            'fn_0': [masked_mae, masked_mse, masked_mape, masked_r2],
+            'fn_1': ['accuracy']
+        }
     )
 
     return model

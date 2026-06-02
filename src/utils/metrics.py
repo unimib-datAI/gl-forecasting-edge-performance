@@ -64,10 +64,19 @@ def _compute_metrics(
 def compute_metrics(
     truth: np.ndarray, predicted: Union[np.ndarray, Sequence[np.ndarray]]
 ) -> Metrics:
+    # -----------------------------
+    # Regression
+    # -----------------------------
+    reg_truth = truth[:, :-1]
+    reg_pred = predicted[0]
+    # mask: don't consider oversampled rows during rgeression metrics computation
+    valid_rows = ~np.all(np.isnan(reg_truth), axis=1)
+    reg_truth = reg_truth[valid_rows]
+    reg_pred = reg_pred[valid_rows]
     # flatten regression predictions
-    flattened_pred = np.concatenate(predicted[0])
-    n_elements = math.prod(truth[:,:-1].shape)
-    flattened_truth = truth[:,:-1].reshape((n_elements,), order="F")
+    flattened_truth = reg_truth.reshape((-1,), order="F")
+    flattened_pred = reg_pred.reshape((-1,), order="F")
+    
     # extract classification predictions
     cls_pred = (predicted[1] > 0.5).astype(int)
     cls_truth = truth[:,-1]

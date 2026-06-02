@@ -131,6 +131,11 @@ class TrainingConfig(BaseModel):
         False,
         description="Whether to serialize the optimizer state together with the model weights",
     )
+    num_permutations: int = Field(
+    ...,
+    ge=1,
+    description="Number of permutations for Janossy pooling"
+    )      
 
 
 class DataPreparationConfig(BaseModel):

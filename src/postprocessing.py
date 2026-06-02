@@ -373,11 +373,11 @@ if __name__ == "__main__":
   # merge_strategy = args.merge_strategy
   # nodes = args.nodes
   # networks = args.networks
-  base_folder = "/Users/federicafilippini/Documents/GitHub/FORKs/gl-forecasting-edge2/experiments/10n-3k/seed1000"
+  base_folder = "../experiments/11n-8k/seed4850"
   merge_strategy = "SIMPLE_AVG"
   nodes = "all"
-  networks = [1]#"all"
-  recompute_all = False
+  networks = [0]#"all"
+  recompute_all = True
   if not isinstance(nodes, list):
     if str(nodes) != "all":
       nodes = [nodes]
@@ -506,6 +506,12 @@ if __name__ == "__main__":
         sc_generalized_metrics["mse"] = [
           m.mse for m in sc_generalized_metrics["metrics"]
         ]
+        sc_generalized_metrics["r2"] = [
+          m.r2 for m in sc_generalized_metrics["metrics"]
+        ]
+        sc_generalized_metrics["accuracy"] = [
+          m.cls_report["accuracy"] for m in sc_generalized_metrics["metrics"]
+        ]
         sc_generalized_metrics.to_csv(
           os.path.join(data_folder, "sc_generalized_metrics.csv"), 
           index = False
@@ -547,6 +553,12 @@ if __name__ == "__main__":
       c_local_metrics["mse"] = [
         m.mse for m in c_local_metrics["metrics"]
       ]
+      c_local_metrics["r2"] = [
+        m.r2 for m in c_local_metrics["metrics"]
+      ]
+      c_local_metrics["accuracy"] = [
+        m.cls_report["accuracy"] for m in c_local_metrics["metrics"]
+      ]
       c_local_metrics.to_csv(
         os.path.join(data_folder, "c_local_metrics.csv"), index = False
       )
@@ -579,7 +591,7 @@ if __name__ == "__main__":
         pd.DataFrame(
           c_local_metrics[
             c_local_metrics["node"] != "centralized"
-          ][["mape", "mse"]].mean(numeric_only = True),
+          ][["mape", "mse", "r2", "accuracy"]].mean(numeric_only = True),
           columns = ["centralized"]
         ).transpose()
       ]
@@ -605,7 +617,7 @@ if __name__ == "__main__":
           # -- centralized (generalized)
           sc_generalized_metrics[
             sc_generalized_metrics["node"] == "centralized"
-          ][["node", "mape", "mse"]].replace(
+          ][["node", "mape", "mse", "r2", "accuracy"]].replace(
             "centralized", "centralized (generalized)"
           ).set_index("node", drop = True),
           # -- gossip (generalized)
