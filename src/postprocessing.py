@@ -137,6 +137,255 @@ def load_gossip_models_and_data(
         }
   return models, all_X_Y_data, plot_folders
 
+def compute_common_test_predictions_by_node_type(
+    models: dict,
+    all_X_Y_data: dict,
+    plot_folders: dict,
+    tasks: dict,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Evaluate every gossip model on the common test set,
+    splitting common-test samples by node_type.
+    """
+
+    all_predictions = pd.DataFrame()
+
+    regression_targets = list(
+        tasks["Multi_Task_regression"]["targets"]
+    )
+
+    all_metrics = {
+        "key": [],
+        "node": [],
+        "common_test_node_type": [],
+        "seed": [],
+        "metrics": [],
+    }
+
+    for target in regression_targets:
+        all_metrics[f"mse_{target}"] = []
+
+    for node, sim_models in models.items():
+        for seed, model in sim_models.items():
+
+            X_common, Y_common = (
+                all_X_Y_data[node][seed]["common_test"]
+            )
+
+            X_common = np.asarray(X_common)
+            Y_common = np.asarray(Y_common)
+
+            if X_common.ndim != 3:
+                raise RuntimeError(
+                    "Common-test X must have 3 dimensions. "
+                    f"Received shape: {X_common.shape}"
+                )
+
+            if len(X_common) != len(Y_common):
+                raise RuntimeError(
+                    "Common-test X and Y have different sample counts: "
+                    f"{len(X_common)} != {len(Y_common)}"
+                )
+
+            # True for actual timesteps, False for zero-padding.
+            valid_steps = np.any(
+                X_common[:, :, :-1] != 0,
+                axis=2,
+            )
+
+            sample_node_types = np.full(
+                len(X_common),
+                -1,
+                dtype=int,
+            )
+
+            for sample_index in range(len(X_common)):
+                node_types_in_sample = X_common[
+                    sample_index,
+                    :,
+                    -1,
+                ][valid_steps[sample_index]]
+
+                if len(node_types_in_sample) == 0:
+                    raise RuntimeError(
+                        "Cannot determine node_type for common-test "
+                        f"sample {sample_index}: no valid timestep."
+                    )
+
+                unique_node_types = np.unique(
+                    node_types_in_sample
+                )
+
+                if len(unique_node_types) != 1:
+                    raise RuntimeError(
+                        "A common-test sample contains multiple "
+                        f"node types: sample={sample_index}, "
+                        f"types={unique_node_types.tolist()}"
+                    )
+
+                sample_node_types[sample_index] = int(
+                    unique_node_types[0]
+                )
+
+            node_plot_folder = os.path.join(
+                plot_folders[seed],
+                "common_test_by_node_type",
+                f"node_{node}",
+            )
+
+            os.makedirs(
+                node_plot_folder,
+                exist_ok=True,
+            )
+
+            for common_test_node_type in (0, 1, 2 , 3 ,4, 5):
+
+                type_mask = (
+                    sample_node_types
+                    == common_test_node_type
+                )
+
+                n_samples = int(type_mask.sum())
+
+                if n_samples == 0:
+                    print(
+                        f"[COMMON_TEST_BY_TYPE] "
+                        f"model_node={node}, seed={seed}, "
+                        f"type={common_test_node_type}: "
+                        "no samples"
+                    )
+                    continue
+
+                X_type = X_common[type_mask]
+                Y_type = Y_common[type_mask]
+
+                dataset_key = (
+                    f"common_test_node_type_"
+                    f"{common_test_node_type}"
+                )
+
+                predictions = compute_and_plot_predictions(
+                    {
+                        dataset_key: (
+                            X_type,
+                            Y_type,
+                        )
+                    },
+                    model,
+                    node_plot_folder,
+                    (
+                        f"node_{node}_"
+                        f"common_test_type_"
+                        f"{common_test_node_type}"
+                    ),
+                    tasks[
+                        "Multi_Task_regression"
+                    ]["targets"],
+                )
+
+                pred = predictions[dataset_key]
+
+                prediction_df = get_predictions_df(
+                    Y_type,
+                    pred,
+                    tasks,
+                )
+
+                prediction_df["key"] = dataset_key
+                prediction_df["node"] = node
+                prediction_df[
+                    "common_test_node_type"
+                ] = common_test_node_type
+                prediction_df["seed"] = seed
+
+                all_predictions = pd.concat(
+                    [
+                        all_predictions,
+                        prediction_df,
+                    ],
+                    ignore_index=True,
+                )
+
+                calculated_metrics = compute_metrics(
+                    Y_type,
+                    pred,
+                )
+
+                # Same regression columns and valid rows as compute_metrics().
+                reg_truth = np.asarray(Y_type[:, :-1])
+                reg_pred = np.asarray(pred[0])
+
+                if (
+                    reg_truth.shape != reg_pred.shape
+                    or reg_truth.shape[1] != len(regression_targets)
+                ):
+                    raise ValueError(
+                        "Regression shapes do not match the target names: "
+                        f"truth={reg_truth.shape}, "
+                        f"predictions={reg_pred.shape}, "
+                        f"targets={regression_targets}"
+                    )
+
+                valid_rows = ~np.all(
+                    np.isnan(reg_truth),
+                    axis=1,
+                )
+
+                squared_errors = (
+                    reg_truth[valid_rows] - reg_pred[valid_rows]
+                ) ** 2
+
+                # Average over samples, keeping one MSE per target.
+                mse_per_target = squared_errors.mean(axis=0)
+
+                for target, target_mse in zip(
+                    regression_targets,
+                    mse_per_target,
+                ):
+                    all_metrics[f"mse_{target}"].append(
+                        float(target_mse)
+                    )
+
+                all_metrics["key"].append(dataset_key)
+                all_metrics["node"].append(node)
+                all_metrics[
+                    "common_test_node_type"
+                ].append(common_test_node_type)
+                all_metrics["seed"].append(seed)
+                all_metrics["metrics"].append(
+                    calculated_metrics
+                )
+
+                class_values, class_counts = np.unique(
+                    Y_type[:, -1].astype(int),
+                    return_counts=True,
+                )
+
+                class_distribution = dict(
+                    zip(
+                        class_values.tolist(),
+                        class_counts.tolist(),
+                    )
+                )
+
+                print(
+                    f"[COMMON_TEST_BY_TYPE] "
+                    f"model_node={node}, "
+                    f"seed={seed}, "
+                    f"type={common_test_node_type}, "
+                    f"samples={n_samples}, "
+                    f"class_distribution="
+                    f"{class_distribution}"
+                )
+
+    if len(all_metrics["metrics"]) == 0:
+        return all_predictions, pd.DataFrame()
+
+    return (
+        all_predictions,
+        get_metrics_df(all_metrics),
+    )
+
 
 def get_metrics_df(metrics_data: pd.DataFrame) -> pd.DataFrame:
   all_metrics = pd.DataFrame(metrics_data)
@@ -373,16 +622,16 @@ if __name__ == "__main__":
   # merge_strategy = args.merge_strategy
   # nodes = args.nodes
   # networks = args.networks
-  base_folder = "/Users/federicafilippini/Documents/GitHub/FORKs/gl-forecasting-edge2/experiments/10n-3k/seed1000"
-  merge_strategy = "SIMPLE_AVG"
+  base_folder = "../experiments/18n-17k/seed4850"
+  merge_strategy = "NODE_TYPE_MERGE"
   nodes = "all"
-  networks = [1]#"all"
-  recompute_all = False
+  networks = [0, 1, 2, 3, 4]#"all"
+  recompute_all = True
   if not isinstance(nodes, list):
     if str(nodes) != "all":
       nodes = [nodes]
     else:
-      nodes = list(range(9)) + ["centralized"]
+      nodes = list(range(18)) + ["centralized"]
   if not isinstance(networks, list):
     if str(networks) != "all":
       networks = [networks]
@@ -429,6 +678,11 @@ if __name__ == "__main__":
       g_models, g_X_Y_data, gplot_folders = load_gossip_models_and_data(
         base_folder, idx, merge_strategy
       )
+
+      print("NETWORK:", idx)
+      print("MODELLI GOSSIP TROVATI:", g_models.keys())
+      print("SEED TROVATI:", gplot_folders.keys())
+
       # -- compute predictions and metrics
       if not recompute_all and os.path.exists(
           os.path.join(
@@ -444,6 +698,27 @@ if __name__ == "__main__":
         gossip_predictions, gossip_metrics = compute_predictions(
           g_models, g_X_Y_data, gplot_folders, tasks
         )
+        common_type_predictions, common_type_metrics = (
+            compute_common_test_predictions_by_node_type(
+                models=g_models,
+                all_X_Y_data=g_X_Y_data,
+                plot_folders=gplot_folders,
+                tasks=tasks,
+            )
+        )
+
+        if not common_type_metrics.empty:
+            common_type_metrics.to_csv(
+                os.path.join(
+                    base_folder,
+                    (
+                        f"{idx}_common_test_by_node_type_"
+                        f"{merge_strategy}.csv"
+                    ),
+                ),
+                index=False,
+            )
+
         for seed, plot_folder in gplot_folders.items():
           plot_predictions(
             gossip_predictions[gossip_predictions["seed"] == seed], 
@@ -456,6 +731,30 @@ if __name__ == "__main__":
             ["mse", "mape", "r2", "accuracy"], 
             plot_folder
           )
+          if not common_type_metrics.empty:
+              common_type_seed_metrics = (
+                  common_type_metrics[
+                      common_type_metrics["seed"] == seed
+                  ]
+              )
+
+              if not common_type_seed_metrics.empty:
+                  common_type_plot_folder = os.path.join(
+                      plot_folder,
+                      "common_test_by_node_type",
+                  )
+
+                  os.makedirs(
+                      common_type_plot_folder,
+                      exist_ok=True,
+                  )
+
+                  plot_metrics(
+                      common_type_seed_metrics,
+                      idx,
+                      ["mse", "mape", "r2", "accuracy"],
+                      common_type_plot_folder,
+                  )
         gossip_metrics.to_csv(
           os.path.join(
             base_folder, f"{idx}_gossip_metrics_{merge_strategy}.csv"
@@ -506,6 +805,12 @@ if __name__ == "__main__":
         sc_generalized_metrics["mse"] = [
           m.mse for m in sc_generalized_metrics["metrics"]
         ]
+        sc_generalized_metrics["r2"] = [
+          m.r2 for m in sc_generalized_metrics["metrics"]
+        ]
+        sc_generalized_metrics["accuracy"] = [
+          m.cls_report["accuracy"] for m in sc_generalized_metrics["metrics"]
+        ]
         sc_generalized_metrics.to_csv(
           os.path.join(data_folder, "sc_generalized_metrics.csv"), 
           index = False
@@ -547,6 +852,12 @@ if __name__ == "__main__":
       c_local_metrics["mse"] = [
         m.mse for m in c_local_metrics["metrics"]
       ]
+      c_local_metrics["r2"] = [
+        m.r2 for m in c_local_metrics["metrics"]
+      ]
+      c_local_metrics["accuracy"] = [
+        m.cls_report["accuracy"] for m in c_local_metrics["metrics"]
+      ]
       c_local_metrics.to_csv(
         os.path.join(data_folder, "c_local_metrics.csv"), index = False
       )
@@ -579,7 +890,7 @@ if __name__ == "__main__":
         pd.DataFrame(
           c_local_metrics[
             c_local_metrics["node"] != "centralized"
-          ][["mape", "mse"]].mean(numeric_only = True),
+          ][["mape", "mse", "r2", "accuracy"]].mean(numeric_only = True),
           columns = ["centralized"]
         ).transpose()
       ]
@@ -605,7 +916,7 @@ if __name__ == "__main__":
           # -- centralized (generalized)
           sc_generalized_metrics[
             sc_generalized_metrics["node"] == "centralized"
-          ][["node", "mape", "mse"]].replace(
+          ][["node", "mape", "mse", "r2", "accuracy"]].replace(
             "centralized", "centralized (generalized)"
           ).set_index("node", drop = True),
           # -- gossip (generalized)

@@ -1,7 +1,7 @@
 from utils.model_creators import build_janossy_rnn_model
 from gossiplearning.config import Config
 
-from utils.janossy import prepare_janossy_input, prepare_janossy_test_input
+from utils.janossy import prepare_janossy_input, prepare_janossy_test_input, UncertaintyTrackingCallback
 from utils.data import load_dataset, load_tasks
 
 from statsmodels.graphics.mosaicplot import mosaic
@@ -62,7 +62,7 @@ def parse_arguments() -> argparse.Namespace:
     "--networks", 
     help="Network indices", 
     nargs="+",
-    default=0
+    default=[0]
   )
   parser.add_argument(
     "--n_sim_per_network", 
@@ -126,14 +126,14 @@ def compute_and_plot_predictions(
     Y_data_cls = np.array(X_Y_data[data_key][1])[:,-1]
     # loop over predicted values
     nr, nc = Y_data.shape
-    ymin = [2,2,2]
-    ymax = [1,1,1]
+    ymin = [2] * nc
+    ymax = [1] * nc
     for i in range(nr):
       for j in range(nc):
         ax[j].plot(
           Y_data[i,j],
           Y_pred[i,j],
-          color = colors[j],
+          color = colors[j % len(colors)],
           marker = ".",
           label = targets[j] if i == 0 else None
         )
@@ -151,7 +151,11 @@ def compute_and_plot_predictions(
       ax[j].legend(loc = "upper left", fontsize = fontsize)
       ax[j].grid(True)
     # compute confusion matrix classification results
-    cmatrix = metrics.confusion_matrix(Y_data_cls, Y_pred_cls)
+    cmatrix = metrics.confusion_matrix(
+        Y_data_cls,
+        Y_pred_cls,
+        labels=[0, 1],
+    )
     cmatrices[data_key] = cmatrix
     idx += 1
   # save figure
@@ -180,14 +184,31 @@ def compute_and_plot_predictions(
     )
     cm_display.plot(ax = ax[0], text_kw = {"fontsize": fontsize})
     #
-    nclass_classification_mosaic_plot(
-      cmatrix.shape[0], 
-      cmatrix,
-      ax = ax[1]
-      # None if output_folder is None else os.path.join(
-      #   output_folder, f"mosaic_plot_{node}_{data_key}.png"
-      # )
-    )
+    # The mosaic plot cannot represent classes having an entire
+    # zero row or zero column in the confusion matrix.
+    has_empty_row = np.any(cmatrix.sum(axis=1) == 0)
+    has_empty_column = np.any(cmatrix.sum(axis=0) == 0)
+
+    if not has_empty_row and not has_empty_column:
+      nclass_classification_mosaic_plot(
+        cmatrix.shape[0],
+        cmatrix,
+        ax=ax[1],
+      )
+    else:
+      ax[1].axis("off")
+      ax[1].text(
+        0.5,
+        0.5,
+        (
+          "Mosaic plot unavailable\n"
+          "because at least one class is absent"
+        ),
+        horizontalalignment="center",
+        verticalalignment="center",
+        fontsize=fontsize,
+        transform=ax[1].transAxes,
+      )
     idx += 1
   plt.savefig(
     os.path.join(
@@ -301,7 +322,7 @@ def nclass_classification_mosaic_plot(
 
 def plot_history(history_df: pd.DataFrame, output_folder: str, node: str):
   # plot MAE history
-  history_df[["fn_0_mae", "val_fn_0_mae"]].plot(grid = True)
+  history_df[["fn_0_masked_mae", "val_fn_0_masked_mae"]].plot(grid = True)
   plt.savefig(
     os.path.join(output_folder, f"mae_{node}.png"),
     dpi = 300,
@@ -310,7 +331,7 @@ def plot_history(history_df: pd.DataFrame, output_folder: str, node: str):
   )
   plt.close()
   # plot MSE history
-  history_df[["fn_0_mse", "val_fn_0_mse"]].plot(grid = True)
+  history_df[["fn_0_masked_mse", "val_fn_0_masked_mse"]].plot(grid = True)
   plt.savefig(
     os.path.join(output_folder, f"mse_{node}.png"),
     dpi = 300,
@@ -319,7 +340,7 @@ def plot_history(history_df: pd.DataFrame, output_folder: str, node: str):
   )
   plt.close()
   # plot MAPE history
-  history_df[["fn_0_mape", "val_fn_0_mape"]].plot(grid = True)
+  history_df[["fn_0_masked_mape", "val_fn_0_masked_mape"]].plot(grid = True)
   plt.savefig(
     os.path.join(output_folder, f"mape_{node}.png"),
     dpi = 300,
@@ -346,7 +367,7 @@ def plot_multinode_history(
   _, axs = plt.subplots(nrows = 4, ncols = 2, figsize = (16,16), sharex = True)
   for node, history_df in histories.groupby("node"):
     color = "k" if node == "centralized" else (
-      colors[0] if centralized_exists else colors[int(node)]
+      colors[0] if centralized_exists else colors[int(node) % len(colors)]
     )
     linewidth = 2 if node == "centralized" else 1
     linestyle = "solid" if node == "centralized" else "dashed"
@@ -354,7 +375,7 @@ def plot_multinode_history(
     # -- MAE
     history_df.plot(
       x = "iter",
-      y = "fn_0_mae", 
+      y = "fn_0_masked_mae", 
       ax = axs[0,0],
       label = label,
       grid = True,
@@ -364,7 +385,7 @@ def plot_multinode_history(
     )
     history_df.plot(
       x = "iter",
-      y = "val_fn_0_mae", 
+      y = "val_fn_0_masked_mae", 
       ax = axs[0,1],
       label = label,
       grid = True,
@@ -372,10 +393,10 @@ def plot_multinode_history(
       linewidth = linewidth,
       linestyle = linestyle
     )
-    # -- MSE
+    # # -- MSE
     history_df.plot(
       x = "iter",
-      y = "fn_0_mse", 
+      y = "fn_0_masked_mse", 
       ax = axs[1,0],
       label = label,
       grid = True,
@@ -385,7 +406,7 @@ def plot_multinode_history(
     )
     history_df.plot(
       x = "iter",
-      y = "val_fn_0_mse", 
+      y = "val_fn_0_masked_mse", 
       ax = axs[1,1],
       label = label,
       grid = True,
@@ -393,10 +414,10 @@ def plot_multinode_history(
       linewidth = linewidth,
       linestyle = linestyle
     )
-    # -- MAPE
+    # # -- MAPE
     history_df.plot(
       x = "iter",
-      y = "fn_0_mape", 
+      y = "fn_0_masked_mape", 
       ax = axs[2,0],
       label = label,
       grid = True,
@@ -406,7 +427,7 @@ def plot_multinode_history(
     )
     history_df.plot(
       x = "iter",
-      y = "val_fn_0_mape", 
+      y = "val_fn_0_masked_mape", 
       ax = axs[2,1],
       label = label,
       grid = True,
@@ -444,7 +465,7 @@ def plot_multinode_history(
   linestyle = "solid"
   # -- MAE
   local.plot(
-    y = "fn_0_mae", 
+    y = "fn_0_masked_mae", 
     ax = axs[0,0],
     label = "local average",
     grid = True,
@@ -453,7 +474,7 @@ def plot_multinode_history(
     linestyle = linestyle
   )
   local.plot(
-    y = "val_fn_0_mae", 
+    y = "val_fn_0_masked_mae", 
     ax = axs[0,1],
     label = "local average",
     grid = True,
@@ -461,9 +482,9 @@ def plot_multinode_history(
     linewidth = linewidth,
     linestyle = linestyle
   )
-  # -- MSE
+  # # -- MSE
   local.plot(
-    y = "fn_0_mse", 
+    y = "fn_0_masked_mse", 
     ax = axs[1,0],
     label = "local average",
     grid = True,
@@ -472,7 +493,7 @@ def plot_multinode_history(
     linestyle = linestyle
   )
   local.plot(
-    y = "val_fn_0_mse", 
+    y = "val_fn_0_masked_mse", 
     ax = axs[1,1],
     label = "local average",
     grid = True,
@@ -480,9 +501,9 @@ def plot_multinode_history(
     linewidth = linewidth,
     linestyle = linestyle
   )
-  # -- MAPE
+  # # -- MAPE
   local.plot(
-    y = "fn_0_mape", 
+    y = "fn_0_masked_mape", 
     ax = axs[2,0],
     label = "local average",
     grid = True,
@@ -491,7 +512,7 @@ def plot_multinode_history(
     linestyle = linestyle
   )
   local.plot(
-    y = "val_fn_0_mape", 
+    y = "val_fn_0_masked_mape", 
     ax = axs[2,1],
     label = "local average",
     grid = True,
@@ -574,6 +595,13 @@ def train_one_model(
     monitor = "val_loss",
     mode = "min",
   )
+
+  basedir, fname = os.path.split(checkpoint_path)
+  log_dir = os.path.join(
+      basedir, "logs", str(fname.replace(".keras", "").split("_")[0])
+  )
+  os.makedirs(log_dir, exist_ok=True)
+
   # extract data
   train_data, validation_data, _ = dataset
   X_train = train_data[0]
@@ -587,6 +615,13 @@ def train_one_model(
   X_val_prepared, Y_val_prepared = prepare_janossy_input(
     X_val, Y_val, num_permutations = 6
   )
+  
+  # callbacks
+  tracker = UncertaintyTrackingCallback(
+      plot_interval=5,
+      save_path=log_dir
+  )
+
   # train
   history = model.fit(
     X_train_prepared,
@@ -599,8 +634,9 @@ def train_one_model(
     callbacks = [
       # early_stopping,
       model_checkpoint,
+      tracker
     ],
-    epochs = 10,
+    epochs = config.training.epochs_per_update * config.training.fixed_updates,
     batch_size = config.training.batch_size,
     shuffle = config.training.shuffle_batch,
     # use_multiprocessing = False,
