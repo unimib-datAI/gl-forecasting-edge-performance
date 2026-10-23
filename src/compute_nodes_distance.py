@@ -42,6 +42,25 @@ import pandas as pd
 import numpy as np
 
 
+network_node_types = [
+  "SOURCE_HEAVY",
+  "SOURCE_MID",
+  "SOURCE_LIGHT",
+  "TARGET_HEAVY",
+  "TARGET_MID",
+  "TARGET_LIGHT"
+]
+
+ordered_node_types = [
+  "SOURCE_HEAVY",
+  "TARGET_HEAVY",
+  "SOURCE_MID",
+  "TARGET_MID",
+  "SOURCE_LIGHT",
+  "TARGET_LIGHT"
+]
+
+
 def parse_arguments() -> argparse.Namespace:
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument(
@@ -101,8 +120,9 @@ def replace_node_type_with_minus_one(X: np.ndarray) -> np.ndarray:
   # before node_type is nonzero. Padding rows retain their original last 
   # feature.
   valid_steps = np.any(result[:, :, :-1] != 0, axis=-1)
+  true_node_type = result[:, :, -1][valid_steps][0]
   result[:, :, -1][valid_steps] = -1.0
-  return result
+  return result, network_node_types[int(true_node_type)]
 
 
 def prepare_janossy_input(
@@ -127,7 +147,9 @@ def prepare_janossy_input(
       if all_perms and len(all_perms) >= num_permutations:
         selected = random.sample(all_perms, num_permutations)
       else:
-        selected = [np.random.permutation(seq_len) for _ in range(num_permutations)]
+        selected = [
+          np.random.permutation(seq_len) for _ in range(num_permutations)
+        ]
       for j, perm in enumerate(selected):
         prepared[i, j] = X[i, list(perm)]
     return prepared
@@ -258,7 +280,7 @@ def run_diagnostic(
     num_permutations: int,
     seed: int,
   ) -> dict[str, Any]:
-  X_minus_one = replace_node_type_with_minus_one(X)
+  X_minus_one, _ = replace_node_type_with_minus_one(X)
   reg_pred, cls_prob = predict(model, X_minus_one, num_permutations, seed)
   saved_reg, _, saved_cls_raw = load_saved_predictions(
     saved_predictions_path, node_id, "train"
@@ -290,7 +312,12 @@ def run_diagnostic(
   return rows
 
 
-def plot_heatmap(distances_df: pd.DataFrame, plt_dir: str, keyword: str):
+def plot_heatmap(
+    distances_df: pd.DataFrame, 
+    plt_dir: str, 
+    keyword: str, 
+    node_types: dict = None
+  ):
   for target in ["aggregate_distance", "similarity_score"]:
     # Convert the long-form DataFrame to a matrix.
     distance_matrix = distances_df.pivot(
@@ -300,9 +327,23 @@ def plot_heatmap(distances_df: pd.DataFrame, plt_dir: str, keyword: str):
     )
     # Sort nodes numerically.
     distance_matrix = distance_matrix.sort_index().sort_index(axis=1)
+    gossip_matrix = distance_matrix.T
+    # If node_type is provided, used that for sorting
+    if node_types is not None:
+      node_order = sorted(
+        set(gossip_matrix.index).union(gossip_matrix.columns),
+        key=lambda node_id: (
+            ordered_node_types.index(node_types[node_id]),
+            node_id,
+        ),
+      )
+      gossip_matrix = gossip_matrix.reindex(
+        index=node_order,
+        columns=node_order,
+      )
     plt.figure(figsize=(12, 10))
-    sns.heatmap(
-      distance_matrix,
+    ax = sns.heatmap(
+      gossip_matrix,
       annot = True,
       fmt = ".3f",
       cmap = "viridis",
@@ -310,6 +351,27 @@ def plot_heatmap(distances_df: pd.DataFrame, plt_dir: str, keyword: str):
       square = True,
       cbar_kws = {"label": target},
     )
+    if node_types is not None:
+      # Group boundaries: HEAVY, MID, LIGHT
+      group_sizes = [
+        sum(
+          node_types[node_id] in {"SOURCE_HEAVY", "TARGET_HEAVY"}
+            for node_id in node_order
+        ),
+        sum(
+          node_types[node_id] in {"SOURCE_MID", "TARGET_MID"}
+            for node_id in node_order
+        ),
+        sum(
+          node_types[node_id] in {"SOURCE_LIGHT", "TARGET_LIGHT"}
+            for node_id in node_order
+        ),
+      ]
+      # Draw black lines between groups
+      boundaries = np.cumsum(group_sizes)[:-1]
+      for boundary in boundaries:
+        ax.axhline(boundary, color="black", linewidth=2)
+        ax.axvline(boundary, color="black", linewidth=2)
     plt.title(f"Pairwise {target}")
     plt.xlabel("Dataset node")
     plt.ylabel("Model node")
@@ -377,8 +439,9 @@ def main(
     for node_id in nodes:
       X, _ = node_data[node_id]
       pair_seed = results_seed#args.seed + node_id * 1009 + node_id * 9176
+      X_minus_one, true_node_type = replace_node_type_with_minus_one(X)
       own_minus_one_predictions[node_id] = predict(
-        models[node_id], replace_node_type_with_minus_one(X), 6, pair_seed
+        models[node_id], X_minus_one, 6, pair_seed
       )
     # Load saved real-node-type regression predictions once per node (reference 1).
     saved_real_type_predictions = {}
@@ -392,7 +455,7 @@ def main(
         )
     for data_node in nodes:
       X, Y = node_data[data_node]
-      X_minus_one = replace_node_type_with_minus_one(X)
+      X_minus_one, true_node_type = replace_node_type_with_minus_one(X)
       for model_node in nodes:
         model = models[model_node]
         # # Use a stable but distinct seed per model/data pair.
@@ -499,6 +562,25 @@ def main(
     ], 
     output_dir,
     "own_model_node_type_minus_one"
+  )
+  # Get true node types
+  node_types = {}
+  for node_id in nodes:
+    X, _ = node_data[node_id]
+    _, true_node_type = replace_node_type_with_minus_one(X)
+    node_types[node_id] = true_node_type
+  # Associate each dataset node with its true node type.
+  prediction_distances_df["data_node_type"] = (
+    prediction_distances_df["data_node"].map(node_types)
+  )
+  prediction_distances_df.to_csv(prediction_distances_path, index=False)
+  plot_heatmap(
+    prediction_distances_df[
+      prediction_distances_df["reference"]=="own_model_node_type_minus_one"
+    ], 
+    output_dir,
+    "own_model_node_type_minus_one-SORTED",
+    node_types
   )
 
 
